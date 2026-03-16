@@ -1,0 +1,29 @@
+# =============================================================================
+# Hyperparameter Configuration
+# =============================================================================
+# WHY A SEPARATE CONFIG FILE?
+# Instead of hardcoding learning_rate=0.001 in your Python script, you put it
+# here. This way you can run different experiments just by changing this file
+# (or passing overrides from the command line), without touching any code.
+# MLflow will log these values so you can always see what config produced what result.
+#
+# TF EQUIVALENT: 
+# In TF you'd pass these directly to model.compile() and model.fit().
+# Having them in a YAML file is an MLOps practice, not a framework requirement.
+
+# Model
+num_classes: 10
+
+# Training
+batch_size: 64
+epochs: 5
+learning_rate: 0.001
+optimizer: adam         # options: adam, sgd
+
+# Data
+data_dir: ./data
+num_workers: 2          # parallel data loading threads
+
+# Tracking
+tracker: none           # options: none, mlflow (we'll add mlflow in Step 5)
+experiment_name: resnet50-cifar10
