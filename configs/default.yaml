@@ -22,8 +22,8 @@ optimizer: adam         # options: adam, sgd
 
 # Data
 data_dir: ./data
-num_workers: 2          # parallel data loading threads
+num_workers: 0          # parallel data loading threads
 
 # Tracking
 tracker: none           # options: none, mlflow (we'll add mlflow in Step 5)
-experiment_name: resnet50-cifar10
+experiment_name: resnet18-cifar10

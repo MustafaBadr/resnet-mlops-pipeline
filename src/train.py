@@ -7,7 +7,8 @@ This is the heart of the project. It:
 2. Downloads and prepares CIFAR-10 data
 3. Runs the training loop
 4. Evaluates on the test set
-5. (Later) Logs everything to MLflow
+5. Logs params, per-epoch metrics, and the best checkpoint to MLflow
+   (when config['tracker'] == 'mlflow')
 
 TF EQUIVALENT OF THIS ENTIRE FILE:
     model = ResNet50(...)
@@ -21,13 +22,15 @@ gives us the hooks to add MLflow, W&B, and other MLOps tools later.
 """
 
 import argparse
+import contextlib
 import time
 import yaml
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import mlflow
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 # Import our model from the file we created in Step 2
 from model import ResNet18
@@ -111,7 +114,12 @@ def get_data_loaders(config):
     test_dataset = datasets.CIFAR10(
         root=config['data_dir'], train=False, download=True, transform=test_transform
     )
-    
+
+    # --- Debug mode: shrink to a tiny subset for fast smoke-testing ---
+    if config.get('debug'):
+        train_dataset = Subset(train_dataset, range(min(200, len(train_dataset))))
+        test_dataset = Subset(test_dataset, range(min(100, len(test_dataset))))
+
     # --- Create DataLoaders ---
     # TF equivalent: tf.data.Dataset.batch(64).shuffle(10000).prefetch(AUTOTUNE)
     train_loader = DataLoader(
@@ -266,8 +274,10 @@ def main():
     parser.add_argument('--tracker', type=str, default=None,
                         choices=['none', 'mlflow'],
                         help='Experiment tracker to use')
+    parser.add_argument('--debug', action='store_true',
+                        help='Run on a tiny data subset (200 train / 100 test) for fast smoke-testing')
     args = parser.parse_args()
-    
+
     # Load config and apply any command line overrides
     config = load_config(args.config)
     if args.epochs is not None:
@@ -278,6 +288,7 @@ def main():
         config['batch_size'] = args.batch_size
     if args.tracker is not None:
         config['tracker'] = args.tracker
+    config['debug'] = args.debug
     
     # --- Device setup ---
     # Check if GPU is available. For your XPS with integrated graphics: CPU.
@@ -292,6 +303,7 @@ def main():
     print(f"Learning rate: {config['learning_rate']}")
     print(f"Optimizer:     {config['optimizer']}")
     print(f"Tracker:       {config['tracker']}")
+    print(f"Debug mode:    {config['debug']}")
     print(f"{'='*60}\n")
     
     # --- Create model ---
@@ -321,45 +333,71 @@ def main():
     
     # --- Load data ---
     train_loader, test_loader = get_data_loaders(config)
-    
-    # --- Training loop ---
-    print(f"\nStarting training...\n")
-    best_acc = 0.0
-    
-    for epoch in range(1, config['epochs'] + 1):
-        epoch_start = time.time()
-        
-        # Train one epoch
-        # TF equivalent: one epoch inside model.fit()
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
-        )
-        
-        # Evaluate on test set
-        # TF equivalent: validation_data=(x_test, y_test) inside model.fit()
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
-        
-        epoch_time = time.time() - epoch_start
-        
-        print(f"\nEpoch {epoch}/{config['epochs']} ({epoch_time:.1f}s)")
-        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-        print(f"  Test  Loss: {test_loss:.4f} | Test  Acc: {test_acc:.2f}%")
-        
-        # Save best model
-        # TF equivalent: ModelCheckpoint callback with save_best_only=True
-        if test_acc > best_acc:
-            best_acc = test_acc
-            torch.save(model.state_dict(), 'best_model.pt')
-            # model.state_dict() = dictionary of all weight tensors
-            # TF equivalent: model.save_weights('best_model.h5')
-            print(f"  >> New best model saved! (Test Acc: {test_acc:.2f}%)")
-    
-    # --- Final summary ---
-    print(f"\n{'='*60}")
-    print(f"Training complete!")
-    print(f"Best test accuracy: {best_acc:.2f}%")
-    print(f"Model saved to: best_model.pt")
-    print(f"{'='*60}")
+
+    # --- MLflow setup ---
+    # Only tracks when config['tracker'] == 'mlflow'. When disabled, `run_context`
+    # is a no-op so the training loop below doesn't need to branch on tracker.
+    use_mlflow = config['tracker'] == 'mlflow'
+    if use_mlflow:
+        mlflow.set_experiment(config['experiment_name'])
+        run_context = mlflow.start_run()
+    else:
+        run_context = contextlib.nullcontext()
+
+    with run_context:
+        if use_mlflow:
+            mlflow.log_params(config)
+
+        # --- Training loop ---
+        print(f"\nStarting training...\n")
+        best_acc = 0.0
+
+        for epoch in range(1, config['epochs'] + 1):
+            epoch_start = time.time()
+
+            # Train one epoch
+            # TF equivalent: one epoch inside model.fit()
+            train_loss, train_acc = train_one_epoch(
+                model, train_loader, criterion, optimizer, device, epoch
+            )
+
+            # Evaluate on test set
+            # TF equivalent: validation_data=(x_test, y_test) inside model.fit()
+            test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+
+            epoch_time = time.time() - epoch_start
+
+            print(f"\nEpoch {epoch}/{config['epochs']} ({epoch_time:.1f}s)")
+            print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+            print(f"  Test  Loss: {test_loss:.4f} | Test  Acc: {test_acc:.2f}%")
+
+            if use_mlflow:
+                mlflow.log_metrics({
+                    'train_loss': train_loss,
+                    'train_acc': train_acc,
+                    'test_loss': test_loss,
+                    'test_acc': test_acc,
+                }, step=epoch)
+
+            # Save best model
+            # TF equivalent: ModelCheckpoint callback with save_best_only=True
+            if test_acc > best_acc:
+                best_acc = test_acc
+                torch.save(model.state_dict(), 'best_model.pt')
+                # model.state_dict() = dictionary of all weight tensors
+                # TF equivalent: model.save_weights('best_model.h5')
+                print(f"  >> New best model saved! (Test Acc: {test_acc:.2f}%)")
+
+        if use_mlflow:
+            mlflow.log_metric('best_test_acc', best_acc)
+            mlflow.log_artifact('best_model.pt')
+
+        # --- Final summary ---
+        print(f"\n{'='*60}")
+        print(f"Training complete!")
+        print(f"Best test accuracy: {best_acc:.2f}%")
+        print(f"Model saved to: best_model.pt")
+        print(f"{'='*60}")
 
 
 if __name__ == '__main__':
