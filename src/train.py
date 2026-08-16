@@ -23,6 +23,7 @@ gives us the hooks to add MLflow, W&B, and other MLOps tools later.
 
 import argparse
 import contextlib
+import subprocess
 import time
 import yaml
 import torch
@@ -261,6 +262,22 @@ def evaluate(model, test_loader, criterion, device):
 # 5. MAIN — PUTTING IT ALL TOGETHER
 # =============================================================================
 
+def get_git_info():
+    """Return (commit_hash, is_dirty) for the current repo.
+    Falls back to ('unknown', 'unknown') if git isn't available (e.g. not a repo)."""
+    try:
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain'], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        is_dirty = bool(status)
+        return commit_hash, is_dirty
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return 'unknown', 'unknown'
+
+
 def main():
     # --- Parse command line arguments ---
     parser = argparse.ArgumentParser(description='Train ResNet-50 on CIFAR-10')
@@ -347,6 +364,9 @@ def main():
     with run_context:
         if use_mlflow:
             mlflow.log_params(config)
+            git_commit, git_dirty = get_git_info()
+            mlflow.log_param('git_commit', git_commit)
+            mlflow.log_param('git_dirty', git_dirty)
 
         # --- Training loop ---
         print(f"\nStarting training...\n")
