@@ -5,3 +5,4 @@ mlruns/
 data/
 *.pt
 venv/
+mlflow.db
